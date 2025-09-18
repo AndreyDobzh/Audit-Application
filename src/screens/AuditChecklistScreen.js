@@ -1,4 +1,4 @@
-// AuditChecklistScreen.js
+// AuditChecklistScreen.js ++++++++
 import React, { useState, useEffect } from 'react';
 import {
   View,
@@ -8,7 +8,7 @@ import {
   Alert,
   ActivityIndicator,
   TextInput,
-  Button,
+  Button, 
   Image
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
