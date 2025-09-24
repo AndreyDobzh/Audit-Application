@@ -1,7 +1,7 @@
 import axios from 'axios';
 
-const APP_ID = 'cd03db95-7c1c-42a2-960f-a052c29348df';
-const NETWORK_ID = 34200; // ← ТВОЙ РЕАЛЬНЫЙ networkId
+const APP_ID = '95a58a15-1d82-44b1-91df-38ba9c2e489f';
+const NETWORK_ID = 34288; // ← ТВОЙ РЕАЛЬНЫЙ networkId
 
 /**
  * Авторизация через системный API Directual

@@ -1,14 +1,16 @@
+// LoginScreen.js
 import React, { useState } from 'react';
 import { View, Text, TextInput, Button, ActivityIndicator, StyleSheet, Alert } from 'react-native';
-import { useNavigation } from '@react-navigation/native'; // ← Добавили хук навигации
+import { useNavigation } from '@react-navigation/native';
 import { login } from '../utils/auth';
 
 export default function LoginScreen({ addLog }) {
+  // ✅ Предзаполненные значения
   const [email, setEmail] = useState('wvertx@gmail.com');
   const [password, setPassword] = useState('11');
   const [loading, setLoading] = useState(false);
 
-  const navigation = useNavigation(); // ← Получаем навигацию
+  const navigation = useNavigation();
 
   const handleLogin = async () => {
     if (!email || !password) {
@@ -17,16 +19,21 @@ export default function LoginScreen({ addLog }) {
     }
 
     setLoading(true);
-    addLog(`🔐 Попытка входа: ${email}`);
+    addLog && addLog(`🔐 Попытка входа: ${email}`);
     try {
       const sessionID = await login(email, password);
-      addLog(`✅ Успешный вход. sessionID: ${sessionID.substring(0, 10)}...`);
+      if (!sessionID) throw new Error('Сервер не вернул sessionID');
 
-      // ⏩ Переходим на экран сотрудников — сразу из этого экрана
+      addLog && addLog(`✅ Успешный вход. sessionID: ${sessionID.substring(0, 10)}...`);
       navigation.navigate('Employees', { sessionID });
     } catch (err) {
-      addLog(`❌ Ошибка входа: ${err.message}`);
-      Alert.alert('Ошибка', err.message);
+      console.error('Login error:', err);
+      let msg = err.message || 'Не удалось войти';
+      if (err.response && err.response.data) {
+        msg = JSON.stringify(err.response.data);
+      }
+      addLog && addLog(`❌ Ошибка входа: ${msg}`);
+      Alert.alert('Ошибка входа', msg);
     } finally {
       setLoading(false);
     }

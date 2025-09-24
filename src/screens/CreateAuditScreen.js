@@ -1,26 +1,20 @@
 // CreateAuditScreen.js
 import React, { useState, useEffect } from 'react';
-import {
-  View,
-  Text,
-  ScrollView,
-  StyleSheet,
-  Alert,
-  Button,
-  ActivityIndicator,
-} from 'react-native';
+import { View, Text, ScrollView, StyleSheet, Alert, Button, ActivityIndicator } from 'react-native';
 import { getWithSession, postWithSession } from '../api/apiClient';
 import PickerInput from '../components/PickerInput';
 
 export default function CreateAuditScreen({ route, navigation, addLog }) {
   const { sessionID } = route.params;
-  const [employees, setEmployees] = useState([]);
+
   const [sections, setSections] = useState([]);
-  const [auditor, setAuditor] = useState(null);
+  const [auditeeList, setAuditeeList] = useState([]);
   const [auditee, setAuditee] = useState(null);
   const [section, setSection] = useState(null);
+  const [currentUserId, setCurrentUserId] = useState(null);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
+  const [loadingEmployees, setLoadingEmployees] = useState(false);
 
   useEffect(() => {
     if (!sessionID) {
@@ -34,31 +28,30 @@ export default function CreateAuditScreen({ route, navigation, addLog }) {
 
     (async () => {
       try {
-        addLog && addLog('📥 Загружаем сотрудников...');
-        const resEmployees = await getWithSession(
-          'https://api.directual.com/good/api/v5/data/employees/GetAllEmployees',
-          sessionID,
-          { pageSize: 200 }
-        );
-
-        if (resEmployees && resEmployees.status === 'OK' && Array.isArray(resEmployees.payload)) {
-          if (!mounted) return;
-          setEmployees(resEmployees.payload);
-        } else {
-          throw new Error(`Некорректный ответ сотрудников: ${JSON.stringify(resEmployees)}`);
-        }
-
+        // 🔹 Загружаем секции
         addLog && addLog('📥 Загружаем секции...');
         const resSections = await getWithSession(
           'https://api.directual.com/good/api/v5/data/sections/GetSectionsName',
           sessionID
         );
-
-        if (resSections && resSections.status === 'OK' && Array.isArray(resSections.payload)) {
+        if (resSections?.status === 'OK' && Array.isArray(resSections.payload)) {
           if (!mounted) return;
           setSections(resSections.payload);
         } else {
           throw new Error(`Некорректный ответ секций: ${JSON.stringify(resSections)}`);
+        }
+
+        // 🔹 Получаем текущего пользователя (creator)
+        addLog && addLog('📥 Получаем текущего пользователя...');
+        const resCurrentUser = await getWithSession(
+          'https://api.directual.com/good/api/v5/data/WebUser/FindCurrentUser',
+          sessionID
+        );
+        if (resCurrentUser?.status === 'OK' && Array.isArray(resCurrentUser.payload) && resCurrentUser.payload.length > 0) {
+          setCurrentUserId(resCurrentUser.payload[0].id);
+          addLog && addLog(`Текущий пользователь: ${resCurrentUser.payload[0].id}`);
+        } else {
+          throw new Error(`Не удалось получить текущего пользователя: ${JSON.stringify(resCurrentUser)}`);
         }
       } catch (err) {
         Alert.alert('Ошибка', `Не удалось загрузить справочники: ${err.message}`);
@@ -70,9 +63,35 @@ export default function CreateAuditScreen({ route, navigation, addLog }) {
     return () => { mounted = false; };
   }, [sessionID]);
 
+  // 🔹 При выборе секции загружаем сотрудников этой секции
+  const onSectionChange = async (selectedSectionId) => {
+    setSection(selectedSectionId);
+    setAuditee(null);
+    setLoadingEmployees(true);
+    try {
+      const res = await getWithSession(
+        'https://api.directual.com/good/api/v5/data/employees/FindSectionEmployee',
+        sessionID,
+        { SectionParam: selectedSectionId }
+      );
+      if (res?.status === 'OK' && Array.isArray(res.payload)) {
+        setAuditeeList(res.payload);
+        addLog && addLog(`Найдено сотрудников: ${res.payload.length}`);
+      } else {
+        setAuditeeList([]);
+        addLog && addLog(`Некорректный ответ сотрудников: ${JSON.stringify(res)}`);
+      }
+    } catch (err) {
+      Alert.alert('Ошибка', `Не удалось загрузить сотрудников: ${err.message}`);
+      setAuditeeList([]);
+    } finally {
+      setLoadingEmployees(false);
+    }
+  };
+
   const handleCreate = async () => {
-    if (!auditor || !auditee || !section) {
-      Alert.alert('Ошибка', 'Заполните все поля: аудитор, аудируемый, секция');
+    if (!auditee || !section || !currentUserId) {
+      Alert.alert('Ошибка', 'Заполните все поля: секция, аудируемый и дождитесь загрузки текущего пользователя');
       return;
     }
 
@@ -82,10 +101,10 @@ export default function CreateAuditScreen({ route, navigation, addLog }) {
       const isoWithMsZ = now.toISOString().split('.')[0] + '.000Z';
 
       const dataToSend = {
-        auditor,
-        auditee,
-        section,
+        auditee,       // ID сотрудника
+        section,       // ID секции
         StartTime: isoWithMsZ,
+        creator: currentUserId, // ID текущего пользователя (creator)
       };
 
       addLog && addLog(`📤 CreateAudits payload: ${JSON.stringify(dataToSend)}`);
@@ -96,20 +115,12 @@ export default function CreateAuditScreen({ route, navigation, addLog }) {
         sessionID
       );
 
-      // Выводим весь ответ API
       Alert.alert('Полный ответ API', JSON.stringify(res, null, 2));
 
-      // Берём auditId из ответа
       const auditId = res?.result?.[0]?.id || res?.auditId;
       if (!auditId) throw new Error('auditId не найден в ответе API');
 
-      // Выводим auditId отдельным алертом
-      Alert.alert('auditId', auditId);
-
-      // Переходим на чек-лист
       navigation.navigate('AuditChecklist', { sessionID, audit: res.result?.[0] });
-
-
     } catch (err) {
       Alert.alert('Ошибка', `Не удалось создать аудит: ${err.message}`);
     } finally {
@@ -126,23 +137,38 @@ export default function CreateAuditScreen({ route, navigation, addLog }) {
     );
   }
 
-  const employeeItems = employees.map(emp => ({
-    label: `${emp.second_name || emp.lastName || ''} ${emp.name || emp.firstName || ''}`.trim(),
-    value: emp.id || emp._id || emp.objId || emp.uuid,
+  const sectionItems = sections.map(s => ({
+    label: s.name || s.title || JSON.stringify(s),
+    value: s.id || s._id,
   }));
 
-  const sectionItems = sections.map(s => ({
-    label: s.name || s.title || s.sectionName || JSON.stringify(s),
-    value: s.id || s._id || s.value || s.name,
+  const auditeeItems = auditeeList.map(emp => ({
+    label: `${emp.second_name || ''} ${emp.name || ''}`.trim(),
+    value: emp.id,
   }));
 
   return (
     <ScrollView contentContainerStyle={styles.container}>
       <Text style={styles.title}>Создать аудит</Text>
 
-      <PickerInput label="Аудитор" selectedValue={auditor} onValueChange={setAuditor} items={employeeItems} />
-      <PickerInput label="Аудируемый" selectedValue={auditee} onValueChange={setAuditee} items={employeeItems} />
-      <PickerInput label="Секция" selectedValue={section} onValueChange={setSection} items={sectionItems} />
+      <PickerInput
+        label="Секция"
+        selectedValue={section}
+        onValueChange={onSectionChange}
+        items={sectionItems}
+      />
+
+      {loadingEmployees ? (
+        <ActivityIndicator size="small" color="#0066cc" style={{ marginVertical: 10 }} />
+      ) : (
+        <PickerInput
+          label="Аудируемый"
+          selectedValue={auditee}
+          onValueChange={setAuditee}
+          items={auditeeItems}
+          disabled={!section || auditeeItems.length === 0}
+        />
+      )}
 
       <View style={{ marginTop: 18 }}>
         <Button title={creating ? 'Создание...' : 'Создать аудит'} onPress={handleCreate} color="#0066cc" disabled={creating} />

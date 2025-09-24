@@ -1,4 +1,4 @@
-// AuditChecklistScreen.js ++++++++
+// AuditChecklistScreen.js
 import React, { useState, useEffect } from 'react';
 import {
   View,
@@ -8,18 +8,93 @@ import {
   Alert,
   ActivityIndicator,
   TextInput,
-  Button, 
-  Image
+  Button,
+  Image,
+  Switch,
+  Platform,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { getWithSession, postWithSession } from '../api/apiClient';
 
+const API_UPLOAD_URL = 'https://lamoda-audit5s.directual.app/api/upload';
+const FILE_BASE_URL = 'https://api.directual.com/fileUploaded/';
+
+const fetchAuditQuestions = async (sessionID, sectionId) => {
+  return getWithSession(
+    'https://api.directual.com/good/api/v5/data/questions/FindQuestionParam',
+    sessionID,
+    { sectionparam: sectionId }
+  );
+};
+
+const fetchAQforAudit = async (sessionID, auditId) => {
+  return getWithSession(
+    'https://api.directual.com/good/api/v5/data/audit_questions/FindAQID',
+    sessionID,
+    { auditid: auditId }
+  );
+};
+
+const updateAQ = async (aqId, sessionID, data) => {
+  return postWithSession(
+    'https://api.directual.com/good/api/v5/data/audit_questions/CreateAQ',
+    { id: aqId, ...data },
+    sessionID
+  );
+};
+
+const updateAuditField = async (auditId, sessionID, data) => {
+  return postWithSession(
+    'https://api.directual.com/good/api/v5/data/audit5s/CreateAudits',
+    { id: auditId, ...data },
+    sessionID
+  );
+};
+
+const uploadPhoto = async (localUri) => {
+  try {
+    let uri = localUri;
+    const formData = new FormData();
+    formData.append('file', {
+      uri,
+      name: 'photo.jpg',
+      type: 'image/jpeg',
+    });
+    const response = await fetch(API_UPLOAD_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'multipart/form-data' },
+      body: formData,
+    });
+    const data = await response.json();
+    if (!data?.result?.finalFileName) throw new Error('Сервер не вернул finalFileName');
+    return `${FILE_BASE_URL}${data.result.finalFileName}`;
+  } catch (err) {
+    Alert.alert('Ошибка загрузки фото', err.message);
+    throw err;
+  }
+};
+
+const sendViolationToServer = async (aqId, note, fotoUrl, fix, sessionID) => {
+  try {
+    return await postWithSession(
+      'https://api.directual.com/good/api/v5/data/violations/CreateViolation',
+      { audit_question_id: aqId, note, foto: fotoUrl, fix },
+      sessionID
+    );
+  } catch (err) {
+    Alert.alert('Ошибка отправки нарушения', err.message);
+    throw err;
+  }
+};
+
 export default function AuditChecklistScreen({ route, navigation, addLog }) {
   const { sessionID, audit } = route.params;
   const [auditState, setAudit] = useState(audit);
-  const [questions, setQuestions] = useState([]);
+  const [auditQuestions, setAuditQuestions] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [violations, setViolations] = useState({}); 
+  const [violations, setViolations] = useState({});
+  const [submitting, setSubmitting] = useState(false);
+  const [uploadingPhotos, setUploadingPhotos] = useState(false);
 
   useEffect(() => {
     if (!sessionID || !auditState) {
@@ -28,142 +103,132 @@ export default function AuditChecklistScreen({ route, navigation, addLog }) {
       return;
     }
 
-    const fetchAndCreateAQ = async () => {
+    let mounted = true;
+
+    const fetchQuestionsAndAQ = async () => {
       try {
-        addLog && addLog(`📥 Загружаем вопросы секции ${auditState.section?.id || '—'}...`);
-        // GET вопросов по секции
-        const resQuestions = await getWithSession(
-          'https://api.directual.com/good/api/v5/data/questions/GetAllQuestions',
-          sessionID,
-          { filter: JSON.stringify({ section_id: auditState.section?.id, is_active: true }) }
-        );
+        addLog && addLog(`📥 Загружаем вопросы для секции ${auditState.section?.id || '—'}...`);
 
-        if (resQuestions.status === 'OK' && Array.isArray(resQuestions.payload)) {
-          const sorted = resQuestions.payload.sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
-          setQuestions(sorted);
+        const resQuestions = await fetchAuditQuestions(sessionID, auditState.section?.id);
+        if (resQuestions.status !== 'OK') throw new Error('Не удалось получить вопросы');
 
-          // Создаем audit_questions для каждого вопроса
-          for (let i = 0; i < sorted.length; i++) {
-            const q = sorted[i];
-            const dataAQ = {
+        const questions = resQuestions.payload || [];
+        for (let q of questions) {
+          try {
+            await updateAQ(null, sessionID, {
               audit_id: auditState.id,
               question_id: q.id,
               score: null,
-              sort_order: i + 1,
-              question_text_snapshot: q.text
-            };
-            try {
-              const res = await postWithSession(
-                'https://api.directual.com/good/api/v5/data/audit_questions/CreateAQ',
-                dataAQ,
-                sessionID
-              );
-              addLog && addLog(`Создан AQ для вопроса ${i + 1}: ${res.result?.id}`);
-            } catch (err) {
-              addLog && addLog(`❌ Ошибка создания AQ: ${err.message}`);
-            }
+              question_text_snapshot: q.text,
+            });
+          } catch (err) {
+            Alert.alert('Ошибка создания AQ', err.message);
           }
-
-          // ++++++++++++++++++++++++++++++++++++++++++++++
-          // После создания получаем все AQ для этого аудита через фильтр
-          const resAQ = await getWithSession(
-            'https://api.directual.com/good/api/v5/data/audit_questions/GetAllAQ',
-            sessionID,
-            { filter: JSON.stringify({ audit_id: auditState.id }) }
-          );
-
-          if (resAQ.status === 'OK' && Array.isArray(resAQ.result)) {
-            const sortedAQ = resAQ.result.sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
-            const aqIds = sortedAQ.map(q => q.id).filter(Boolean);
-
-            // Алерт с количеством AQ
-            Alert.alert('Количество AQ', `${aqIds.length} AQ найдено после фильтра`);
-            // Алерт со списком ID
-            Alert.alert('Audit Question IDs', aqIds.join(', '));
-
-            // Записываем их в questions для дальнейшего использования
-            setQuestions(sortedAQ);
-          }
-          // ++++++++++++++++++++++++++++++++++++++++++++++
         }
+
+        const resAQ = await fetchAQforAudit(sessionID, auditState.id);
+        if (resAQ.status !== 'OK') throw new Error('Не удалось получить AQ');
+
+        const sortedAQ = (resAQ.payload || []).sort((a, b) => {
+          const orderA = questions.find(q => q.id === a.question_id)?.sort_order || 0;
+          const orderB = questions.find(q => q.id === b.question_id)?.sort_order || 0;
+          return orderA - orderB;
+        });
+
+        if (mounted) setAuditQuestions(sortedAQ);
       } catch (err) {
-        addLog && addLog(`❌ Ошибка: ${err.message}`);
         Alert.alert('Ошибка', err.message);
       } finally {
-        setLoading(false);
+        if (mounted) setLoading(false);
       }
     };
 
-    fetchAndCreateAQ();
+    fetchQuestionsAndAQ();
+    return () => { mounted = false; };
   }, [sessionID, auditState]);
 
   const updateScore = async (aqId, value) => {
     try {
-      await postWithSession(
-        'https://api.directual.com/good/api/v5/data/audit_questions/CreateAQ',
-        { id: aqId, score: value },
-        sessionID
-      );
-      addLog && addLog(`✅ Обновлён score для ${aqId}: ${value}`);
+      await updateAQ(aqId, sessionID, { score: value });
+      setAuditQuestions(prev => prev.map(aq => (aq.id === aqId ? { ...aq, score: value } : aq)));
     } catch (err) {
-      addLog && addLog(`❌ Ошибка обновления score: ${err.message}`);
+      Alert.alert('Ошибка обновления оценки', err.message);
     }
   };
 
-  // ++++++++++++++++++++++++++++++++++++++++++++++
-  const addViolation = async (aqId) => {
-    const permission = await ImagePicker.requestCameraPermissionsAsync();
-    if (!permission.granted) {
-      Alert.alert('Ошибка', 'Нет доступа к камере');
-      return;
-    }
+  const takePhoto = async (aqId) => {
+    try {
+      const permission = await ImagePicker.requestCameraPermissionsAsync();
+      if (!permission.granted) return Alert.alert('Ошибка', 'Нет доступа к камере');
 
-    const result = await ImagePicker.launchCameraAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      quality: 0.7,
-    });
+      const result = await ImagePicker.launchCameraAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, quality: 0.5 });
+      if (!result.canceled) return;
 
-    if (!result.canceled) {
-      const newViolation = { foto: result.assets[0].uri, note: '', audit_question_id: aqId, sent: false };
-      setViolations((prev) => ({
-        ...prev,
-        [aqId]: [...(prev[aqId] || []), newViolation]
-      }));
+      const localPhoto = result.assets[0];
+      const newViolation = { foto: localPhoto.uri, note: '', fix: false, audit_question_id: aqId, sent: false, finalUrl: null };
+      setViolations(prev => ({ ...prev, [aqId]: [...(prev[aqId] || []), newViolation] }));
+    } catch (err) {
+      Alert.alert('Ошибка съёмки фото', err.message);
     }
   };
 
   const updateViolationNote = (aqId, index, text) => {
-    setViolations((prev) => {
+    setViolations(prev => {
       const updated = [...(prev[aqId] || [])];
       updated[index].note = text;
       return { ...prev, [aqId]: updated };
     });
   };
 
-  const sendViolation = async (aqId, index) => {
-    const v = violations[aqId][index];
-    if (!v || v.sent) return;
+  const toggleFix = (aqId, index) => {
+    setViolations(prev => {
+      const updated = [...(prev[aqId] || [])];
+      updated[index].fix = !updated[index].fix;
+      return { ...prev, [aqId]: updated };
+    });
+  };
 
+  const deleteViolation = (aqId, index) => {
+    setViolations(prev => {
+      const updated = [...(prev[aqId] || [])];
+      updated.splice(index, 1);
+      return { ...prev, [aqId]: updated };
+    });
+  };
+
+  const submitAudit = async () => {
+    setSubmitting(true);
+    setUploadingPhotos(true);
     try {
-      const res = await postWithSession(
-        'https://api.directual.com/good/api/v5/data/violations/CreateViolation',
-        {
-          audit_question_id: aqId,
-          foto: v.foto,
-          note: v.note
-        },
-        sessionID
-      );
+      // Сохраняем оценки
+      await Promise.all(auditQuestions.map(aq => updateAQ(aq.id, sessionID, { score: aq.score })));
 
-      addLog && addLog(`📤 Нарушение отправлено для ${aqId}`);
-      const updated = [...violations[aqId]];
-      updated[index].sent = true;
-      setViolations(prev => ({ ...prev, [aqId]: updated }));
+      // Загружаем нарушения и фото
+      for (const aqId of Object.keys(violations)) {
+        for (let i = 0; i < violations[aqId].length; i++) {
+          const v = violations[aqId][i];
+          if (!v.finalUrl) {
+            const fotoUrl = await uploadPhoto(v.foto);
+            await sendViolationToServer(aqId, v.note, fotoUrl, v.fix, sessionID);
+            v.sent = true;
+            v.finalUrl = fotoUrl;
+          }
+        }
+      }
+
+      // Обновляем поле EndTime аудита
+      const isoWithMsZ = new Date().toISOString().split('.')[0] + '.000Z';
+      await updateAuditField(auditState.id, sessionID, { EndTime: isoWithMsZ });
+
+      Alert.alert('Успех', 'Аудит завершен, все фото и оценки сохранены');
+      navigation.goBack();
     } catch (err) {
-      Alert.alert('Ошибка', `Не удалось отправить нарушение: ${err.message}`);
+      Alert.alert('Ошибка', err.message);
+    } finally {
+      setSubmitting(false);
+      setUploadingPhotos(false);
     }
   };
-  // ++++++++++++++++++++++++++++++++++++++++++++++
 
   if (loading) {
     return (
@@ -176,49 +241,58 @@ export default function AuditChecklistScreen({ route, navigation, addLog }) {
 
   return (
     <ScrollView contentContainerStyle={styles.container}>
-      {auditState && (
-        <>
-          <Text style={styles.title}>Аудит: {auditState.id}</Text>
-          <Text style={styles.subtitle}>Аудитор: {auditState.auditor?.name || '—'}</Text>
-          <Text style={styles.subtitle}>Аудируемый: {auditState.auditee?.name || '—'}</Text>
-          <Text style={styles.subtitle}>Секция: {auditState.section?.name || '—'}</Text>
-        </>
-      )}
+      <Text style={styles.title}>Аудит: {auditState.id}</Text>
+      <Text style={styles.subtitle}>Аудитор: {auditState.creator?.lastName || '—'}</Text>
+      <Text style={styles.subtitle}>Аудируемый: {auditState.auditee?.second_name || '—'}</Text>
+      <Text style={styles.subtitle}>Секция: {auditState.section?.name || '—'}</Text>
 
-      <Text style={[styles.title, { marginTop: 20 }]}>Вопросы</Text>
-      {questions.map((q, index) => (
-        <View key={q.id || index} style={styles.questionItem}>
-          <Text style={styles.questionText}>{index + 1}. {q.text}</Text>
-
+      {auditQuestions.map((aq, index) => (
+        <View key={aq.id} style={styles.questionItem}>
+          <Text style={styles.questionText}>{index + 1}. {aq.question_text_snapshot}</Text>
           <TextInput
             style={styles.input}
             placeholder="Введите оценку"
             keyboardType="numeric"
-            onChangeText={(val) => updateScore(q.id, val)}
+            value={aq.score ? aq.score.toString() : ''}
+            onChangeText={val => updateScore(aq.id, val)}
           />
+          <Button title="➕ Добавить несоответствие" onPress={() => takePhoto(aq.id)} />
 
-          <View style={{ marginTop: 10 }}>
-            <Button title="➕ Добавить нарушение" onPress={() => addViolation(q.id)} />
-            {(violations[q.id] || []).map((v, idx) => (
-              <View key={idx} style={styles.violationBlock}>
-                <Image source={{ uri: v.foto }} style={styles.image} />
-                <TextInput
-                  style={styles.noteInput}
-                  placeholder="Описание нарушения"
-                  value={v.note}
-                  onChangeText={(text) => updateViolationNote(q.id, idx, text)}
-                />
-                <Button
-                  title={v.sent ? 'Отправлено' : 'Отправить нарушение'}
-                  onPress={() => sendViolation(q.id, idx)}
-                  disabled={v.sent}
-                  color={v.sent ? '#6c757d' : '#28a745'}
-                />
+          {(violations[aq.id] || []).map((v, idx) => (
+            <View key={idx} style={styles.violationBlock}>
+              <Image source={{ uri: v.foto }} style={styles.image} />
+              <TextInput
+                style={styles.noteInput}
+                placeholder="Описание нарушения"
+                value={v.note}
+                onChangeText={text => updateViolationNote(aq.id, idx, text)}
+              />
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 }}>
+                <Text>Устранено</Text>
+                <Switch value={v.fix} onValueChange={() => toggleFix(aq.id, idx)} />
               </View>
-            ))}
-          </View>
+              <Button title="Удалить несоответствие" color="#dc3545" onPress={() => deleteViolation(aq.id, idx)} />
+            </View>
+          ))}
         </View>
       ))}
+
+      {(submitting || uploadingPhotos) && (
+        <View style={{ marginVertical: 20, alignItems: 'center' }}>
+          <ActivityIndicator size="large" color="#0066cc" />
+          <Text style={{ marginTop: 10 }}>{uploadingPhotos ? 'Загрузка фото...' : 'Завершаем аудит...'}</Text>
+        </View>
+      )}
+
+      <View style={styles.submitButtonContainer}>
+        <Button
+          title={submitting ? "Отправка..." : "🏁 Завершить аудит"}
+          onPress={submitAudit}
+          disabled={submitting || uploadingPhotos}
+          color="#28a745"
+        />
+      </View>
+      <View style={styles.bottomSpacer} />
     </ScrollView>
   );
 }
@@ -234,5 +308,7 @@ const styles = StyleSheet.create({
   input: { borderWidth: 1, borderColor: '#ccc', borderRadius: 6, padding: 8, marginBottom: 10 },
   violationBlock: { marginTop: 10, borderWidth: 1, borderColor: '#ddd', borderRadius: 6, padding: 10 },
   image: { width: '100%', height: 150, marginBottom: 10, borderRadius: 6 },
-  noteInput: { borderWidth: 1, borderColor: '#ccc', borderRadius: 6, padding: 8, marginBottom: 5 }
+  noteInput: { borderWidth: 1, borderColor: '#ccc', borderRadius: 6, padding: 8, marginBottom: 5 },
+  submitButtonContainer: { marginTop: 30, marginBottom: 20 },
+  bottomSpacer: { height: 300 },
 });
