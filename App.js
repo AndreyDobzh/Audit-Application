@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useRef } from 'react';
+import { View, Button, ScrollView, Text, StyleSheet, Alert } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createStackNavigator } from '@react-navigation/stack';
-import { View, ScrollView, Text, Button, StyleSheet, Alert } from 'react-native';
 
 // Экраны
 import LoginScreen from './src/screens/LoginScreen';
@@ -14,27 +14,23 @@ const Stack = createStackNavigator();
 export default function App() {
   const [sessionID, setSessionID] = useState(null);
   const [logs, setLogs] = useState([]);
+  const navigationRef = useRef();
 
+  // Добавление логов
   const addLog = (message) => {
     const logEntry = `[${new Date().toLocaleTimeString()}] ${message}`;
     setLogs((prev) => [...prev, logEntry]);
     console.log(logEntry);
   };
 
-  // 🔁 После установки sessionID — автоматически переходим на Employees
-  useEffect(() => {
-    if (sessionID) {
-      addLog('✅ Сессия установлена — перенаправляем на Employees');
-    }
-  }, [sessionID]);
-
+  // Успешная авторизация
   const handleLoginSuccess = (sid) => {
     addLog(`🔐 Авторизация успешна. sessionID: ${sid.substring(0, 10)}...`);
     setSessionID(sid);
-    // ⏩ Автоматический переход на экран сотрудников
     navigationRef.current?.navigate('Employees');
   };
 
+  // Выход из системы
   const handleLogout = () => {
     addLog('🚪 Выход из системы');
     Alert.alert('Выход', 'Вы действительно хотите выйти?', [
@@ -50,15 +46,9 @@ export default function App() {
     ]);
   };
 
-  // 🧭 Реф для навигации извне
-  const navigationRef = React.createRef();
-
   return (
     <NavigationContainer ref={navigationRef}>
-      <Stack.Navigator
-        initialRouteName="Login"
-        screenOptions={{ headerShown: false }} // Скрываем заголовки для кастомного управления
-      >
+      <Stack.Navigator initialRouteName="Login" screenOptions={{ headerShown: false }}>
         <Stack.Screen name="Login">
           {(props) => <LoginScreen {...props} onLoginSuccess={handleLoginSuccess} addLog={addLog} />}
         </Stack.Screen>
@@ -68,7 +58,11 @@ export default function App() {
             <View style={{ flex: 1 }}>
               <EmployeesScreen {...props} sessionID={sessionID} addLog={addLog} />
               <View style={styles.footerButton}>
-                <Button title="➕ Создать аудит" onPress={() => props.navigation.navigate('CreateAudit')} color="#0066cc" />
+                <Button
+                  title="➕ Создать аудит"
+                  onPress={() => props.navigation.navigate('CreateAudit')}
+                  color="#0066cc"
+                />
                 <View style={{ height: 10 }} />
                 <Button title="🚪 Выйти" onPress={handleLogout} color="#d9534f" />
               </View>
@@ -76,22 +70,28 @@ export default function App() {
           )}
         </Stack.Screen>
 
-        <Stack.Screen name="AuditChecklist">
-        {(props) => (
-            <AuditChecklistScreen {...props} addLog={addLog} />
-                     )}
-        </Stack.Screen>
-
-
         <Stack.Screen name="CreateAudit">
           {(props) => (
             <View style={{ flex: 1 }}>
-              <CreateAuditScreen {...props} sessionID={sessionID} onBack={() => props.navigation.goBack()} addLog={addLog} />
+              <CreateAuditScreen
+                {...props}
+                sessionID={sessionID}
+                onBack={() => props.navigation.goBack()}
+                addLog={addLog}
+              />
               <View style={styles.footerButton}>
-                <Button title="⬅️ Назад к сотрудникам" onPress={() => props.navigation.navigate('Employees')} color="#666" />
+                <Button
+                  title="⬅️ Назад к сотрудникам"
+                  onPress={() => props.navigation.navigate('Employees')}
+                  color="#666"
+                />
               </View>
             </View>
           )}
+        </Stack.Screen>
+
+        <Stack.Screen name="AuditChecklist">
+          {(props) => <AuditChecklistScreen {...props} addLog={addLog} sessionID={sessionID} />}
         </Stack.Screen>
       </Stack.Navigator>
 
